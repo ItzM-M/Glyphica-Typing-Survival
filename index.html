@@ -2311,19 +2311,13 @@ function drawSettingsPage() {
   hits = []; startHit = null; sliderHits = []; stepHits = [];
   const narrow = W < 760;
   const titleY = Math.max(narrow ? 56 : 64, H * 0.1);
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.save();
-  ctx.fillStyle = GOLD; ctx.shadowColor = GOLD; ctx.shadowBlur = 26 + 8 * Math.sin(time / 400);
-  ctx.font = `800 ${narrow ? 42 : 58}px Prompt, "Noto Sans Thai", sans-serif`;
-  ctx.fillText(tr('settings_title'), W / 2, titleY);
-  ctx.restore();
   ctx.fillStyle = '#94a3b8'; ctx.font = `600 ${narrow ? 13 : 16}px Prompt, "Noto Sans Thai", sans-serif`;
-  ctx.fillText(tr('subtitle'), W / 2, titleY + (narrow ? 32 : 38));
+
 
   const colW = narrow ? Math.min(420, W - 40) : Math.min(400, (W - 100) / 2), gap = narrow ? 0 : 56;
   const left = narrow ? W / 2 - colW / 2 : W / 2 - (colW * 2 + gap) / 2;
   const cols = narrow ? [left, left] : [left, left + colW + gap];
-  const top = titleY + (narrow ? 70 : 84);
+  const top = titleY + (narrow ? 70 : 84) - settingsScroll;
   const ys = [top, top];
   let shared = top;
   const colHead = [tr('col_game'), tr('col_look')];
@@ -2348,6 +2342,21 @@ function drawSettingsPage() {
   });
 
   startHit = null;
+  const contentEnd = Math.max(shared, ys[0], ys[1]);
+  settingsMax = Math.max(0, contentEnd + settingsScroll - (H - 24));
+  settingsScroll = Math.max(0, Math.min(settingsScroll, settingsMax));
+
+  // Header drawn last so scrolled content slides under it
+  ctx.save();
+  ctx.fillStyle = THEMES[settings.theme].bottom;
+  ctx.fillRect(0, 0, W, titleY + 34);
+  ctx.restore();
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.save();
+  ctx.fillStyle = GOLD; ctx.shadowColor = GOLD; ctx.shadowBlur = 26 + 8 * Math.sin(time / 400);
+  ctx.font = `800 ${narrow ? 42 : 58}px Prompt, "Noto Sans Thai", sans-serif`;
+  ctx.fillText(tr('settings_title'), W / 2, titleY);
+  ctx.restore();
 
   ctx.fillStyle = '#64748b'; ctx.font = `${narrow ? 12 : 14}px Prompt, "Noto Sans Thai", sans-serif`;
   ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
@@ -2975,9 +2984,13 @@ canvas.addEventListener('pointerdown', e => {
   const p = pointerXY(e);
   const s = sliderHits.find(h => p.x >= h.x && p.x <= h.x + h.w && p.y >= h.y && p.y <= h.y + h.h);
   if (s) { dragSlider = s; menuSel = s.si; sliderFromX(s, p.x); }
+  else if (page === 'settings') dragScroll = { y: p.y, start: settingsScroll };
 });
-canvas.addEventListener('pointermove', e => { if (dragSlider) sliderFromX(dragSlider, pointerXY(e).x); });
-addEventListener('pointerup', () => { dragSlider = null; });
+canvas.addEventListener('pointermove', e => {
+  if (dragSlider) sliderFromX(dragSlider, pointerXY(e).x);
+  else if (dragScroll) scrollSettings(dragScroll.start + (dragScroll.y - pointerXY(e).y));
+});
+addEventListener('pointerup', () => { dragSlider = null; dragScroll = null; });
 addEventListener('pointercancel', () => { dragSlider = null; });
 
 // ---------- Run statistics and end-of-game summary ----------
@@ -3512,6 +3525,7 @@ function drawHome() {
     }
     ctx.fillStyle = it.primary ? '#1a1200' : '#f8fafc';
     ctx.font = '800 18px Prompt, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(it.label, x + w / 2, y + h / 2);
   });
   ctx.textBaseline = 'middle';
@@ -3829,6 +3843,11 @@ function syncPad() {
   if (!window.__pad) return;
   window.__pad.style.display = state === 'play' ? 'flex' : 'none';
 }
+
+// ---------- Settings scrolling (drag or mouse wheel) ----------
+let settingsScroll = 0, settingsMax = 0, dragScroll = null;
+function scrollSettings(to) { settingsScroll = Math.max(0, Math.min(to, settingsMax)); }
+addEventListener('wheel', e => { if (state === 'menu' && page === 'settings') scrollSettings(settingsScroll + e.deltaY); }, { passive: true });
 
 resize();
 requestAnimationFrame(frame);
