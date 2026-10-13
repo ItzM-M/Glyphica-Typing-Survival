@@ -3789,4 +3789,49 @@ function drawPodium() {
     ctx.restore();
     if (!s.r) return;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillStyle = '#1a1200'; ctx.f
+    ctx.fillStyle = '#1a1200'; ctx.font = '800 20px Prompt, sans-serif';
+    ctx.fillText(String(s.place), cx + s.dx, y + 18);
+    ctx.font = '700 13px Prompt, sans-serif';
+    ctx.fillText(String(s.r.score), cx + s.dx, y + s.h / 2 + 8);
+    ctx.fillStyle = '#e6edf7'; ctx.font = '600 13px Prompt, sans-serif';
+    const name = String(s.r.name).slice(0, 10);
+    ctx.fillText(name, cx + s.dx, y - 12);
+  });
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+}
+
+// ---------- Built-in letter pad for phones ----------
+if (TOUCH) {
+  const pad = document.createElement('div');
+  pad.id = 'keypad';
+  pad.style.cssText = 'position:fixed;left:0;right:0;bottom:0;padding:8px 6px 12px;display:none;flex-direction:column;gap:6px;align-items:center;background:rgba(6,8,18,0.88);z-index:4';
+  const rows = ['qwertyuiop', 'asdfghjkl', 'zxcvbnm'];
+  rows.forEach((row, i) => {
+    const r = document.createElement('div');
+    r.style.cssText = 'display:flex;gap:5px;justify-content:center;width:100%;max-width:520px';
+    [...row].forEach(k => r.appendChild(padKey(k, k.toUpperCase())));
+    if (i === 2) r.appendChild(padKey('Backspace', '⌫', 'flex:1.6'));
+    pad.appendChild(r);
+  });
+  document.body.appendChild(pad);
+  window.__pad = pad;
+}
+function padKey(key, label, extra = '') {
+  const b = document.createElement('button');
+  b.textContent = label;
+  b.style.cssText = 'flex:1;max-width:46px;height:44px;margin:0;padding:0;border-radius:10px;font:700 17px ui-monospace,Menlo,monospace;background:rgba(255,255,255,0.08);color:#e6edf7;border:1px solid rgba(255,255,255,0.14);touch-action:manipulation;' + extra;
+  b.addEventListener('pointerdown', e => { e.preventDefault(); window.dispatchEvent(new KeyboardEvent('keydown', { key })); });
+  return b;
+}
+function syncPad() {
+  const donate = document.getElementById('donateBtn');
+  if (donate) donate.style.display = state === 'menu' ? '' : 'none';
+  if (!window.__pad) return;
+  window.__pad.style.display = state === 'play' ? 'flex' : 'none';
+}
+
+resize();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
