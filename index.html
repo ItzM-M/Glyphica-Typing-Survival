@@ -3841,8 +3841,18 @@ if (TOUCH) {
     if (i === 2) r.appendChild(padKey('Backspace', '⌫', 'flex:1.6'));
     pad.appendChild(r);
   });
+  // Dedicated touch ability button: mobile browsers do not have a physical Space bar.
+  const abilityBtn = document.createElement('button');
+  abilityBtn.id = 'mobileAbilityBtn';
+  abilityBtn.type = 'button';
+  abilityBtn.textContent = settings.lang === 'th' ? 'ใช้สกิล ✦' : 'USE ABILITY ✦';
+  abilityBtn.style.cssText = 'width:min(92%,520px);min-height:46px;margin:2px 0 0;padding:8px 14px;border-radius:12px;font:700 15px Prompt,"Noto Sans Thai",sans-serif;background:linear-gradient(135deg,#facc15,#f59e0b);color:#211600;border:1px solid rgba(255,255,255,.3);touch-action:manipulation;box-shadow:0 4px 18px rgba(250,204,21,.2)';
+  abilityBtn.addEventListener('pointerdown', e => { e.preventDefault(); e.stopPropagation(); });
+  abilityBtn.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); if (typeof useAbility === 'function') useAbility(); });
+  pad.appendChild(abilityBtn);
   document.body.appendChild(pad);
   window.__pad = pad;
+  window.__mobileAbilityBtn = abilityBtn;
 }
 function padKey(key, label, extra = '') {
   const b = document.createElement('button');
@@ -3861,6 +3871,15 @@ function syncPad() {
   if (donate) donate.style.display = state === 'menu' ? '' : 'none';
   if (!window.__pad) return;
   window.__pad.style.display = state === 'play' ? 'flex' : 'none';
+  const ab = window.__mobileAbilityBtn;
+  if (ab) {
+    const it = SHOP.find(i => i.id === shop.equipped) || SHOP[0];
+    const ready = abilityCd <= 0;
+    const label = settings.lang === 'th' ? it.ab.th : it.ab.en;
+    ab.textContent = ready ? `✦ ${label} · ใช้สกิล` : `⌛ ${label} · ${Math.ceil(abilityCd / 1000)}s`;
+    ab.disabled = !ready;
+    ab.style.opacity = ready ? '1' : '.65';
+  }
 }
 
 // ---------- Settings scrolling (drag or mouse wheel) ----------
@@ -3922,7 +3941,9 @@ addEventListener('keydown', e => {
     try {
       const r = await rpc('glyphica_get_state', {
         p_name: name, p_hash: hash,
-        p_local: { coins: shop.coins, owned: shop.owned, equipped: shop.equipped }
+        // Never seed a newly logged-in account from the previous account's browser cache.
+        // The server is the source of truth for account-owned coins and characters.
+        p_local: { coins: 0, owned: ['default'], equipped: 'default' }
       });
       if (r.ok) { shop.coins = r.coins; shop.owned = r.owned; shop.equipped = r.equipped; saveShop(); }
     } catch (e) {}
