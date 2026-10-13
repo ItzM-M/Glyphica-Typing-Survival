@@ -4090,7 +4090,8 @@ addEventListener('keydown', e => {
   let tab = 'challenge', note = '';
   const TABS = () => [
     ['challenge', L('ท้าทาย', 'Challenges')], ['friends', L('เพื่อน', 'Friends')],
-    ['stats', L('สถิติ', 'Stats')], ['feedback', L('ความเห็น', 'Feedback')]
+    ['stats', L('สถิติ', 'Stats')], ['feedback', L('ความเห็น', 'Feedback')],
+    ['account', L('บัญชี', 'Account')]
   ];
   function openHub(t) { if (t) tab = t; hub.classList.remove('hidden'); renderHub(); }
   function renderHub() {
@@ -4098,7 +4099,7 @@ addEventListener('keydown', e => {
     const tabs = $('hubTabs'); tabs.textContent = '';
     TABS().forEach(([k, label]) => tabs.append(h('button', { textContent: label, className: k === tab ? '' : 'ghost', onclick: () => { note = ''; tab = k; renderHub(); } })));
     const body = $('hubBody'); body.textContent = '';
-    const view = { challenge: viewChallenge, friends: viewFriends, stats: viewStats, feedback: viewFeedback }[tab];
+    const view = { challenge: viewChallenge, friends: viewFriends, stats: viewStats, feedback: viewFeedback, account: viewAccount }[tab];
     view(body).catch(() => { body.textContent = ''; body.append(h('div', { className: 'msg err', textContent: tr('no_db') })); });
   }
   const needLogin = () => h('div', {}, h('div', { className: 'msg', textContent: L('ต้องเข้าสู่ระบบก่อนใช้ส่วนนี้', 'Log in to use this section') }),
@@ -4169,11 +4170,20 @@ addEventListener('keydown', e => {
     out.push(h('h3', { textContent: L('เพื่อน', 'Friends'), style: 'color:#facc15;margin:18px 0 4px' }));
     if (!canDuel()) out.push(h('div', { className: 'msg', textContent: L('เล่นจบเกมหนึ่งรอบ (ระดับ ง่าย/ปกติ/ยาก/นรก) แล้วกลับมาที่นี่เพื่อท้าเพื่อนให้ทำคะแนนให้ทัน', 'Finish a game (Easy/Normal/Hard/Insane), then come back here to challenge a friend to beat your score') }));
     if (!s.friends.length) out.push(h('div', { className: 'msg', textContent: L('ยังไม่มีเพื่อน', 'No friends yet') }));
-    s.friends.forEach(f => out.push(h('div', { style: 'display:flex;gap:8px;align-items:center;margin:6px 0' },
-      h('span', { textContent: `${f.name} · ${L('สูงสุด', 'best')} ${f.best}`, style: 'flex:1' }),
+    s.friends.forEach(f => out.push(h('div', { style: 'display:flex;gap:8px;align-items:center;margin:6px 0;flex-wrap:wrap' },
+      h('span', { textContent: `${f.name} · ${L('สูงสุด', 'best')} ${f.best}`, style: 'flex:1;min-width:120px' }),
       h('button', {
         textContent: canDuel() ? `⚔ ${L('ท้า', 'Challenge')} (${lastRun.score})` : '⚔', disabled: !canDuel(), style: 'margin:0;opacity:' + (canDuel() ? 1 : 0.4),
         onclick: () => act('glyphica_duel_create', { p_to: f.name, p_score: lastRun.score, p_preset: lastRun.preset, p_wordset: lastRun.wordset, p_theme: lastRun.theme, p_seed: Math.floor(Math.random() * 2147483647) }).then(r => { if (r.ok) { note = L('ส่งคำท้าแล้ว', 'Duel sent'); renderHub(); } })
+      }),
+      h('button', {
+        textContent: L('ลบเพื่อน', 'Remove'), className: 'ghost', style: 'margin:0',
+        onclick: async () => {
+          if (!confirm(L(`ต้องการลบ ${f.name} ออกจากรายชื่อเพื่อนใช่ไหม?`, `Remove ${f.name} from your friends?`))) return;
+          const r = await rpc('glyphica_friend_remove', { ...A, p_other: f.name }).catch(() => ({ err: 'x' }));
+          if (r.ok) { alert(L('ลบเพื่อนแล้ว', 'Friend removed')); renderHub(); }
+          else alert(r.err === 'not_friends' ? L('ไม่พบความเป็นเพื่อนนี้', 'Friendship not found') : L('ลบเพื่อนไม่สำเร็จ ลองใหม่อีกครั้ง', 'Could not remove friend. Please try again.'));
+        }
       }))));
     if (s.outgoing.length) out.push(h('div', { className: 'msg', textContent: L('รอการตอบรับ: ', 'Pending: ') + s.outgoing.join(', ') }));
     if (s.duels_out.length) {
@@ -4182,6 +4192,50 @@ addEventListener('keydown', e => {
       s.duels_out.forEach(d => out.push(h('div', { className: 'msg', textContent: `${d.to} · ${L('เป้า', 'target')} ${d.target}${d.result != null ? ' → ' + d.result : ''} · ${stTxt[d.status] || d.status}` })));
     }
     body.textContent = ''; body.append(...out);
+  }
+
+
+  // --- account management / permanent account deletion ---
+  async function viewAccount(body) {
+    if (!authed()) return body.append(needLogin());
+    body.append(
+      h('h3', { textContent: L('จัดการบัญชี', 'Account management'), style: 'color:#facc15;margin:12px 0 8px' }),
+      h('div', { className: 'msg', textContent: L(`กำลังเข้าสู่ระบบเป็น ${session.name}`, `Signed in as ${session.name}`) }),
+      h('div', { className: 'msg err', textContent: L('การลบบัญชีจะลบเหรียญ ตัวละคร ประวัติ คะแนน รายชื่อเพื่อน และคำท้าทั้งหมดของบัญชีนี้อย่างถาวร', 'Deleting your account permanently removes its coins, characters, history, scores, friends, and duels.') }),
+      h('button', {
+        textContent: L('ลบบัญชีถาวร', 'Delete account permanently'),
+        style: 'background:#991b1b;border-color:#ef4444;margin-top:8px',
+        onclick: async () => {
+          const typed = prompt(L(`พิมพ์ชื่อบัญชี ${session.name} เพื่อยืนยันการลบ`, `Type the account name ${session.name} to confirm deletion`));
+          if (typed === null) return;
+          if (typed.trim().toLowerCase() !== session.name.trim().toLowerCase()) {
+            alert(L('ชื่อบัญชีไม่ตรง ยกเลิกการลบแล้ว', 'Account name did not match. Deletion cancelled.'));
+            return;
+          }
+          if (!confirm(L('ยืนยันลบบัญชีถาวรใช่ไหม? ไม่สามารถกู้คืนได้', 'Permanently delete this account? This cannot be undone.'))) return;
+          const oldName = session.name;
+          let r;
+          try { r = await rpc('glyphica_delete_account', { p_name: session.name, p_hash: session.hash }); }
+          catch (e) { r = { err: 'request_failed' }; }
+          if (!r || !r.ok) {
+            alert(r && r.err === 'wrong_pin' ? L('ยืนยันบัญชีไม่ผ่าน กรุณาออกแล้วเข้าสู่ระบบใหม่', 'Account verification failed. Please log in again.') : L('ลบบัญชีไม่สำเร็จ ลองใหม่อีกครั้ง', 'Could not delete account. Please try again.'));
+            return;
+          }
+          session.name = null; session.hash = null;
+          try {
+            localStorage.removeItem('glyphica.user');
+            localStorage.removeItem('glyphica.hash');
+            localStorage.removeItem('glyphica.shop');
+          } catch (e) {}
+          shop.coins = 0; shop.owned = ['default']; shop.equipped = 'default';
+          saveShop();
+          closeModals();
+          try { $('btnLogout').style.display = 'none'; } catch (e) {}
+          try { syncPad(); } catch (e) {}
+          alert(L(`ลบบัญชี ${oldName} และข้อมูลออนไลน์เรียบร้อยแล้ว`, `Account ${oldName} and its online data have been deleted.`));
+        }
+      })
+    );
   }
 
   // --- personal stats graph ---
