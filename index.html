@@ -3874,6 +3874,368 @@ addEventListener('keydown', e => {
   if (e.key.length === 1 && /^[a-z]$/i.test(e.key)) keyFlash = { k: e.key.toLowerCase(), t: performance.now() };
 });
 
+
+
+// ===== Glyphica add-on: cross-device sync, challenges, friends, stats =====
+// ===================== Glyphica add-on =====================
+// วางทั้งบล็อกนี้ในไฟล์เกม "ก่อน" บรรทัด  resize();  (ท้ายสุดของ <script>)
+// ใช้ RPC ที่มีอยู่แล้วใน Supabase: get_state, buy, submit_run, challenge_*, history,
+// social, friend_*, duel_create, feedback, event
+(() => {
+  const L = (th, en) => (settings.lang === 'th' ? th : en);
+  const authed = () => !!(session.name && session.hash);
+  const noop = () => {};
+
+  // ---------- client id + analytics ----------
+  const CID = (() => {
+    try {
+      let c = localStorage.getItem('glyphica.cid');
+      if (!c) {
+        c = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2) + Date.now());
+        localStorage.setItem('glyphica.cid', c);
+      }
+      return c;
+    } catch (e) { return 'anon' + Math.random().toString(36).slice(2); }
+  })();
+  let special = null;   // daily / weekly / duel config while active
+  let backup = null;    // user's own settings, restored when leaving special mode
+  let lastRun = null;   // last finished run, used for creating duels
+
+  function ev(kind, extra = {}) {
+    rpc('glyphica_event', {
+      p_client: CID, p_kind: kind, p_theme: settings.theme, p_wordset: settings.wordset,
+      p_preset: settings.preset, p_level: extra.level ?? null, p_secs: extra.secs ?? null,
+      p_mode: special ? special.kind : 'free'
+    }).catch(noop);
+  }
+
+  // ---------- session now keeps the PIN hash (needed by every RPC) ----------
+  try { session.hash = localStorage.getItem('glyphica.hash') || null; } catch (e) {}
+  if (session.name && !session.hash) session.name = null; // old login without hash: ask to log in once more
+  const clearHash = () => { session.hash = null; try { localStorage.removeItem('glyphica.hash'); } catch (e) {} };
+  $('btnLogout').addEventListener('click', clearHash);
+  $('btnProfileLogout').addEventListener('click', clearHash);
+
+  // ---------- 1) cross-device sync of coins / characters ----------
+  async function syncState(name = session.name, hash = session.hash) {
+    if (!name || !hash) return;
+    try {
+      const r = await rpc('glyphica_get_state', {
+        p_name: name, p_hash: hash,
+        p_local: { coins: shop.coins, owned: shop.owned, equipped: shop.equipped }
+      });
+      if (r.ok) { shop.coins = r.coins; shop.owned = r.owned; shop.equipped = r.equipped; saveShop(); }
+    } catch (e) {}
+  }
+
+  const origLogin = doLogin;
+  doLogin = async (name, pin) => {
+    const r = await origLogin(name, pin);
+    if (r && r.ok) {
+      const h = await hashPin(name, pin);
+      session.hash = h;
+      try { localStorage.setItem('glyphica.hash', h); } catch (e) {}
+      await syncState(name, h);
+    }
+    return r;
+  };
+
+  const origBuy = buyOrEquip;
+  buyOrEquip = async it => {
+    if (!authed()) return origBuy(it);
+    try {
+      const r = await rpc('glyphica_buy', { p_name: session.name, p_hash: session.hash, p_item: it.id });
+      if (r.err === 'no_coins') { $('shopCoins').textContent = tr('shop_need'); return; }
+      if (r.err === 'no_state') { await syncState(); renderShop(); return; }
+      if (r.err) { $('shopCoins').textContent = tr('save_fail'); return; }
+      shop.coins = r.coins; shop.owned = r.owned; shop.equipped = r.equipped;
+      saveShop(); SFX.select(); renderShop();
+    } catch (e) { $('shopCoins').textContent = tr('save_fail'); }
+  };
+
+  const origOpenShop = openShop;
+  openShop = () => { origOpenShop(); syncState().then(() => renderShop()); };
+
+  // ---------- seeded words + special modes (daily / weekly / duel) ----------
+  function seedOf(s) { let h = 2166136261; for (const c of String(s)) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; }
+  function rng(seed) {
+    let a = seed >>> 0;
+    return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  }
+  function shuf(arr, r) { const a = arr.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(r() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+
+  const origNext = nextWord;
+  nextWord = pool => {
+    if (!special || !special.seq) return origNext(pool);
+    for (let t = 0; t < 50; t++) {
+      const w = special.seq[special.i++ % special.seq.length];
+      if (!enemies.some(e => e.text === w)) return w;
+    }
+    return special.seq[0];
+  };
+
+  const origReset = reset;
+  reset = () => {
+    origReset();
+    if (special) { special.rnd = rng(special.seed); special.seq = shuf(wordPool(), special.rnd); special.i = 0; }
+    lastRun = null;
+    ev('run_start');
+  };
+
+  function restoreSettings() {
+    if (backup) {
+      Object.assign(settings, backup);
+      PALETTE = THEMES[settings.theme].palette; initAmbient(); creatures = [];
+      backup = null;
+    }
+    special = null;
+  }
+  function startSpecial(cfg) {
+    backup = backup || { ...settings };
+    const preset = PRESETS[cfg.preset] ? cfg.preset : 'normal';
+    Object.assign(settings, PRESETS[preset], {
+      preset, wordset: WORD_SETS[cfg.wordset] ? cfg.wordset : 'classic',
+      theme: THEMES[cfg.theme] ? cfg.theme : 'space'
+    });
+    PALETTE = THEMES[settings.theme].palette; initAmbient(); creatures = [];
+    special = cfg; stageCfg = null;
+    closeModals();
+    reset();
+  }
+
+  const origMenu = goMenu;
+  goMenu = () => {
+    if (state === 'play' || state === 'paused') ev('quit', { level: playerLevel, secs: Math.round(playMs / 1000) });
+    origMenu();
+    restoreSettings();
+  };
+
+  // settings changed during a special run must not overwrite the player's own settings
+  const origSaveSettings = saveSettings;
+  saveSettings = () => {
+    if (!backup) return origSaveSettings();
+    try { localStorage.setItem('glyphica.settings', JSON.stringify({ ...backup, sound: settings.sound })); } catch (e) {}
+  };
+
+  // ---------- 2/3) submit every run: history, WPM/accuracy, challenges, duels ----------
+  saveScore = async function () {
+    const st = runStats();
+    ev('run_end', { level: playerLevel, secs: st.secs });
+    lastRun = { score, preset: settings.preset, wordset: settings.wordset, theme: settings.theme, at: Date.now() };
+    if (!authed()) { saveStatus = tr('not_saved'); return; }
+    saveStatus = '…';
+    const mode = special ? special.kind : 'free';
+    try {
+      const r = await rpc('glyphica_submit_run', {
+        p_name: session.name, p_hash: session.hash, p_score: score, p_level: playerLevel, p_words: kills,
+        p_secs: st.secs, p_preset: settings.preset, p_wordset: settings.wordset, p_theme: settings.theme,
+        p_coins: runCoins, p_wpm: Math.min(400, st.wpm), p_acc: st.acc, p_samples: run.samples.slice(-300),
+        p_mode: mode, p_challenge: special && special.key ? special.key : null,
+        p_duel: special && special.duelId ? special.duelId : null
+      });
+      if (r.err === 'challenge_expired') saveStatus = L('ความท้าทายนี้หมดเวลาแล้ว', 'This challenge has expired');
+      else if (r.err) saveStatus = tr('save_fail');
+      else {
+        if (typeof r.coins === 'number') { shop.coins = r.coins; saveShop(); }
+        if (r.duel) saveStatus = r.duel === 'won' ? L('ชนะดวล!', 'Duel won!') : L('แพ้ดวล', 'Duel lost');
+        else saveStatus = r.rank ? tr('saved').replace('{r}', r.rank) : L('บันทึกแล้ว', 'Saved');
+      }
+    } catch (e) { saveStatus = tr('save_fail'); }
+  };
+
+  // label for daily / weekly / duel during play
+  const origBar = drawInputBar;
+  drawInputBar = T => {
+    origBar(T);
+    if (!special || state !== 'play') return;
+    const txt = special.kind === 'duel'
+      ? `⚔ ${special.opp} · ${L('เป้า', 'Target')} ${special.target}`
+      : (special.kind === 'daily' ? L('รายวัน ', 'Daily ') : L('รายสัปดาห์ ', 'Weekly ')) + String(special.key).slice(2);
+    ctx.save();
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = '600 14px Prompt, "Noto Sans Thai", sans-serif';
+    ctx.fillStyle = special.kind === 'duel' && score >= special.target ? GOLD : '#cbd5e1';
+    ctx.fillText(txt, W / 2, 96);
+    ctx.restore();
+  };
+
+  // ---------- hub modal: challenges / friends / stats / feedback ----------
+  const h = (tag, props = {}, ...kids) => { const e = document.createElement(tag); Object.assign(e, props); kids.flat().forEach(k => e.append(k)); return e; };
+  const hub = h('div', { id: 'hubModal', className: 'modal hidden' });
+  hub.innerHTML = '<button class="closeX" aria-label="close">✕</button><div class="card wide"><h2 id="hubTitle"></h2><div class="chips" id="hubTabs"></div><div id="hubBody"></div></div>';
+  document.body.appendChild(hub);
+  hub.querySelector('.closeX').onclick = closeModals;
+
+  let tab = 'challenge', note = '';
+  const TABS = () => [
+    ['challenge', L('ท้าทาย', 'Challenges')], ['friends', L('เพื่อน', 'Friends')],
+    ['stats', L('สถิติ', 'Stats')], ['feedback', L('ความเห็น', 'Feedback')]
+  ];
+  function openHub(t) { if (t) tab = t; hub.classList.remove('hidden'); renderHub(); }
+  function renderHub() {
+    $('hubTitle').textContent = TABS().find(x => x[0] === tab)[1];
+    const tabs = $('hubTabs'); tabs.textContent = '';
+    TABS().forEach(([k, label]) => tabs.append(h('button', { textContent: label, className: k === tab ? '' : 'ghost', onclick: () => { note = ''; tab = k; renderHub(); } })));
+    const body = $('hubBody'); body.textContent = '';
+    const view = { challenge: viewChallenge, friends: viewFriends, stats: viewStats, feedback: viewFeedback }[tab];
+    view(body).catch(() => { body.textContent = ''; body.append(h('div', { className: 'msg err', textContent: tr('no_db') })); });
+  }
+  const needLogin = () => h('div', {}, h('div', { className: 'msg', textContent: L('ต้องเข้าสู่ระบบก่อนใช้ส่วนนี้', 'Log in to use this section') }),
+    h('button', { textContent: tr('account_btn'), onclick: () => { closeModals(); openLogin(); } }));
+  const loadingMsg = () => h('div', { className: 'msg', textContent: tr('loading') });
+  const board = rows => {
+    const tb = h('tbody');
+    rows.forEach((r, i) => tb.append(h('tr', { className: session.name && r.name === session.name ? 'me' : '' },
+      ...[i + 1, r.name, r.score, r.wpm + ' WPM', r.acc + '%'].map(v => h('td', { textContent: v })))));
+    return rows.length ? h('table', {}, tb) : h('div', { className: 'msg', textContent: tr('board_empty') });
+  };
+
+  // --- challenges ---
+  async function viewChallenge(body) {
+    if (!authed()) return body.append(needLogin());
+    body.append(loadingMsg());
+    const info = await rpc('glyphica_challenge_info', {});
+    const sections = [];
+    for (const kind of ['daily', 'weekly']) {
+      const rows = await rpc('glyphica_challenge_board', { p_kind: kind, p_limit: 10 }).catch(() => []);
+      const key = info[kind];
+      sections.push(
+        h('h3', { textContent: kind === 'daily' ? L('ความท้าทายรายวัน', 'Daily challenge') : L('ความท้าทายรายสัปดาห์', 'Weekly challenge'), style: 'color:#facc15;margin:18px 0 4px' }),
+        h('div', { className: 'msg', textContent: key.slice(2) + L(' · ชุดคำและความยากเดียวกันทุกคน (ปกติ)', ' · same words and difficulty for everyone (Normal)') }),
+        h('button', { textContent: L('เล่นเลย ▶', 'Play ▶'), onclick: () => startSpecial({ kind, key, seed: seedOf(key), preset: 'normal', wordset: 'classic', theme: 'space' }) }),
+        board(rows));
+    }
+    body.textContent = ''; body.append(...sections);
+  }
+
+  // --- friends & duels ---
+  const FRIEND_MSG = {
+    sent: ['ส่งคำขอแล้ว', 'Request sent'], accepted: ['เป็นเพื่อนกันแล้ว', 'You are now friends'],
+    no_player: ['ไม่พบผู้เล่นชื่อนี้', 'Player not found'], self: ['เพิ่มตัวเองไม่ได้', 'You cannot add yourself'],
+    exists: ['ส่งคำขอไปแล้ว', 'Already requested'], too_many: ['คำขอค้างเยอะเกินไป', 'Too many pending requests'],
+    not_friends: ['ต้องเป็นเพื่อนกันก่อน', 'You must be friends first'],
+    no_run: ['ต้องเล่นจบเกมภายใน 15 นาทีก่อน', 'Finish a game within the last 15 minutes first']
+  };
+  const fmsg = r => { const k = r.ok === true ? 'sent' : (r.ok || r.err); const m = FRIEND_MSG[k]; return m ? L(m[0], m[1]) : tr('save_fail'); };
+  const canDuel = () => lastRun && Date.now() - lastRun.at < 14 * 60000 && PRESETS[lastRun.preset];
+
+  async function viewFriends(body) {
+    if (!authed()) return body.append(needLogin());
+    body.append(loadingMsg());
+    const A = { p_name: session.name, p_hash: session.hash };
+    const s = await rpc('glyphica_social', A);
+    if (s.err) { body.textContent = ''; body.append(h('div', { className: 'msg err', textContent: tr('wrong_pin') })); return; }
+    const act = async (fn, extra) => { const r = await rpc(fn, { ...A, ...extra }).catch(() => ({ err: 'x' })); note = r.err ? fmsg(r) : (r.ok ? fmsg(r) : ''); renderHub(); return r; };
+    const inp = h('input', { placeholder: L('ชื่อเพื่อน', 'Friend name'), maxLength: 16 });
+    const out = [];
+    if (note) out.push(h('div', { className: 'msg ok', textContent: note })); note = '';
+    out.push(h('label', { textContent: L('เพิ่มเพื่อน', 'Add friend') }), inp,
+      h('button', { textContent: L('ส่งคำขอ', 'Send request'), onclick: () => act('glyphica_friend_request', { p_target: inp.value.trim() }) }));
+
+    if (s.duels_in.length) {
+      out.push(h('h3', { textContent: L('คำท้าที่ได้รับ', 'Duels for you'), style: 'color:#facc15;margin:18px 0 4px' }));
+      s.duels_in.forEach(d => out.push(h('div', { style: 'display:flex;gap:8px;align-items:center;margin:6px 0' },
+        h('span', { textContent: `${d.from} · ${L('เป้า', 'target')} ${d.target}`, style: 'flex:1' }),
+        h('button', { textContent: L('รับคำท้า ▶', 'Accept ▶'), style: 'margin:0', onclick: () => startSpecial({ kind: 'duel', duelId: d.id, seed: d.seed, preset: d.preset, wordset: d.wordset, theme: d.theme, target: d.target, opp: d.from }) }))));
+    }
+    if (s.incoming.length) {
+      out.push(h('h3', { textContent: L('คำขอเป็นเพื่อน', 'Friend requests'), style: 'color:#facc15;margin:18px 0 4px' }));
+      s.incoming.forEach(n => out.push(h('div', { style: 'display:flex;gap:8px;align-items:center;margin:6px 0' },
+        h('span', { textContent: n, style: 'flex:1' }),
+        h('button', { textContent: L('รับ', 'Accept'), style: 'margin:0', onclick: () => act('glyphica_friend_respond', { p_other: n, p_accept: true }) }),
+        h('button', { textContent: L('ปฏิเสธ', 'Decline'), className: 'ghost', style: 'margin:0', onclick: () => act('glyphica_friend_respond', { p_other: n, p_accept: false }) }))));
+    }
+    out.push(h('h3', { textContent: L('เพื่อน', 'Friends'), style: 'color:#facc15;margin:18px 0 4px' }));
+    if (!canDuel()) out.push(h('div', { className: 'msg', textContent: L('เล่นจบเกมหนึ่งรอบ (ระดับ ง่าย/ปกติ/ยาก/นรก) แล้วกลับมาที่นี่เพื่อท้าเพื่อนให้ทำคะแนนให้ทัน', 'Finish a game (Easy/Normal/Hard/Insane), then come back here to challenge a friend to beat your score') }));
+    if (!s.friends.length) out.push(h('div', { className: 'msg', textContent: L('ยังไม่มีเพื่อน', 'No friends yet') }));
+    s.friends.forEach(f => out.push(h('div', { style: 'display:flex;gap:8px;align-items:center;margin:6px 0' },
+      h('span', { textContent: `${f.name} · ${L('สูงสุด', 'best')} ${f.best}`, style: 'flex:1' }),
+      h('button', {
+        textContent: canDuel() ? `⚔ ${L('ท้า', 'Challenge')} (${lastRun.score})` : '⚔', disabled: !canDuel(), style: 'margin:0;opacity:' + (canDuel() ? 1 : 0.4),
+        onclick: () => act('glyphica_duel_create', { p_to: f.name, p_score: lastRun.score, p_preset: lastRun.preset, p_wordset: lastRun.wordset, p_theme: lastRun.theme, p_seed: Math.floor(Math.random() * 2147483647) }).then(r => { if (r.ok) { note = L('ส่งคำท้าแล้ว', 'Duel sent'); renderHub(); } })
+      }))));
+    if (s.outgoing.length) out.push(h('div', { className: 'msg', textContent: L('รอการตอบรับ: ', 'Pending: ') + s.outgoing.join(', ') }));
+    if (s.duels_out.length) {
+      out.push(h('h3', { textContent: L('คำท้าที่ส่งไป', 'Duels you sent'), style: 'color:#facc15;margin:18px 0 4px' }));
+      const stTxt = { pending: L('รอตอบ', 'pending'), won: L('เพื่อนทำได้ตามเป้า', 'they beat it'), lost: L('คุณชนะ', 'you held') };
+      s.duels_out.forEach(d => out.push(h('div', { className: 'msg', textContent: `${d.to} · ${L('เป้า', 'target')} ${d.target}${d.result != null ? ' → ' + d.result : ''} · ${stTxt[d.status] || d.status}` })));
+    }
+    body.textContent = ''; body.append(...out);
+  }
+
+  // --- personal stats graph ---
+  async function viewStats(body) {
+    if (!authed()) return body.append(needLogin());
+    body.append(loadingMsg());
+    const r = await rpc('glyphica_history', { p_name: session.name, p_hash: session.hash });
+    body.textContent = '';
+    const runs = (r.runs || []);
+    if (!runs.length) return body.append(h('div', { className: 'msg', textContent: L('ยังไม่มีประวัติ เล่นสักรอบแล้วกลับมาดู', 'No history yet. Play a round and come back.') }));
+    const avg = a => a.length ? Math.round(a.reduce((s, x) => s + x, 0) / a.length) : 0;
+    const recent = runs.slice(-5).map(x => x.wpm), older = runs.slice(0, -5).map(x => x.wpm);
+    const trend = older.length ? avg(recent) - avg(older) : 0;
+    const box = (v, label) => h('div', {}, h('b', { textContent: v }), h('span', { textContent: label }));
+    body.append(h('div', { className: 'statgrid' },
+      box(Math.max(...runs.map(x => x.wpm)), L('WPM สูงสุด', 'Best WPM')),
+      box(avg(runs.map(x => x.wpm)), L('WPM เฉลี่ย', 'Average WPM')),
+      box(avg(runs.map(x => x.acc)) + '%', L('ความแม่นยำเฉลี่ย', 'Average accuracy')),
+      box((trend >= 0 ? '+' : '') + trend, L('แนวโน้ม WPM (5 รอบล่าสุด)', 'WPM trend (last 5 runs)'))));
+    const cv = h('canvas', { width: 640, height: 220, style: 'width:100%;height:220px;margin-top:14px;background:rgba(255,255,255,0.03);border-radius:12px' });
+    body.append(cv, h('div', { className: 'msg', textContent: L('เส้นเหลือง = WPM · เส้นประ = ความแม่นยำ · ' + runs.length + ' รอบล่าสุด', 'Gold = WPM · dashed = accuracy · last ' + runs.length + ' runs') }));
+    const g = cv.getContext('2d'), pad = 28, w = 640 - pad * 2, ht = 220 - pad * 2;
+    const maxW = Math.max(20, ...runs.map(x => x.wpm));
+    const px = i => pad + (runs.length === 1 ? w / 2 : (i / (runs.length - 1)) * w);
+    const line = (val, max, color, dash) => {
+      g.strokeStyle = color; g.fillStyle = color; g.lineWidth = 2.5; g.setLineDash(dash || []);
+      g.beginPath(); runs.forEach((x, i) => { const y = pad + ht - (val(x) / max) * ht; i ? g.lineTo(px(i), y) : g.moveTo(px(i), y); }); g.stroke(); g.setLineDash([]);
+      runs.forEach((x, i) => { g.beginPath(); g.arc(px(i), pad + ht - (val(x) / max) * ht, 3, 0, 7); g.fill(); });
+    };
+    g.strokeStyle = 'rgba(255,255,255,0.12)'; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(pad, pad); g.lineTo(pad, pad + ht); g.lineTo(pad + w, pad + ht); g.stroke();
+    line(x => x.acc, 100, 'rgba(248,250,252,0.65)', [6, 5]);
+    line(x => x.wpm, maxW, '#facc15');
+    g.fillStyle = '#94a3b8'; g.font = '12px sans-serif'; g.fillText(maxW + ' WPM', pad + 4, pad - 8);
+  }
+
+  // --- feedback / bug report ---
+  async function viewFeedback(body) {
+    const kind = h('select', {}, h('option', { value: 'feedback', textContent: L('ข้อเสนอแนะ', 'Feedback') }), h('option', { value: 'bug', textContent: L('รายงานบั๊ก', 'Bug report') }));
+    const msg = h('textarea', { maxLength: 1000, rows: 5, placeholder: L('เล่าให้ฟังได้เลย (3–1000 ตัวอักษร)', 'Tell us what you think (3–1000 characters)'),
+      style: 'width:100%;box-sizing:border-box;margin-top:10px;padding:10px 12px;border-radius:10px;border:1px solid rgba(255,255,255,0.18);background:#0a1020;color:#e6edf7;font:16px Prompt,sans-serif' });
+    const status = h('div', { className: 'msg' });
+    body.append(h('label', { textContent: L('ประเภท', 'Type') }), kind, msg,
+      h('button', {
+        textContent: L('ส่ง', 'Send'), onclick: async () => {
+          const text = msg.value.trim();
+          if (text.length < 3) { status.className = 'msg err'; status.textContent = L('พิมพ์อย่างน้อย 3 ตัวอักษร', 'Please write at least 3 characters'); return; }
+          try {
+            const r = await rpc('glyphica_feedback', { p_client: CID, p_name: authed() ? session.name : null, p_hash: authed() ? session.hash : null, p_kind: kind.value, p_msg: text, p_lang: settings.lang, p_ua: navigator.userAgent.slice(0, 200) });
+            if (r.ok) { msg.value = ''; status.className = 'msg ok'; status.textContent = L('ขอบคุณสำหรับความเห็น!', 'Thanks for your feedback!'); }
+            else { status.className = 'msg err'; status.textContent = r.err === 'rate_limited' ? L('ส่งบ่อยเกินไป ลองใหม่ภายหลัง', 'Too many messages, try again later') : tr('save_fail'); }
+          } catch (e) { status.className = 'msg err'; status.textContent = tr('save_fail'); }
+        }
+      }), status);
+  }
+
+  // ---------- floating buttons ----------
+  const hubBtn = h('button', { className: 'donate', onclick: () => openHub(), style: 'bottom:84px;display:none' });
+  const duelBtn = h('button', { className: 'donate', onclick: () => openHub('friends'), style: 'right:50%;bottom:16px;transform:translateX(50%);display:none' });
+  document.body.append(hubBtn, duelBtn);
+  const setText = (el, t) => { if (el.textContent !== t) el.textContent = t; };
+  const origSync = syncPad;
+  syncPad = () => {
+    origSync();
+    hubBtn.style.display = state === 'menu' && page === 'home' ? '' : 'none';
+    duelBtn.style.display = state === 'over' && authed() && lastRun && PRESETS[lastRun.preset] ? '' : 'none';
+    setText(hubBtn, L('ท้าทาย · เพื่อน · สถิติ', 'Challenges · Friends · Stats'));
+    setText(duelBtn, L('⚔ ท้าเพื่อน', '⚔ Challenge a friend'));
+  };
+
+  // ---------- startup ----------
+  ev('session_start');
+  if (authed()) syncState();
+})();
+
 resize();
 requestAnimationFrame(frame);
 </script>
