@@ -2210,7 +2210,8 @@ function drawHUD(T) {
   // Lives (number with a heart) and the mute button on the right
   ctx.textAlign = 'right';
   ctx.fillStyle = '#f87171'; ctx.font = '700 22px Prompt, "Noto Sans Thai", sans-serif';
-  ctx.fillText(`♥ ${lives}/${maxLives}`, W - 66, 50);
+  if (narrow) { ctx.font = '600 15px Prompt, sans-serif'; ctx.fillText(`♥ ${lives}/${maxLives}`, W - 20, 96); }
+  else ctx.fillText(`♥ ${lives}/${maxLives}`, W - 66, 50);
   drawMuteButton();
   ctx.textAlign = 'left';
 }
@@ -2714,8 +2715,9 @@ function openProfile() {
 }
 
 function drawTopButtons() {
-  boardBtnHit = { x: 20, y: 20, w: 120, h: 36 };
-  accountBtnHit = { x: 150, y: 20, w: 200, h: 36 };
+  const narrowTop = W < 500;
+  boardBtnHit = narrowTop ? { x: 16, y: 20, w: 100, h: 36 } : { x: 20, y: 20, w: 120, h: 36 };
+  accountBtnHit = narrowTop ? { x: 124, y: 20, w: Math.max(120, W - 194), h: 36 } : { x: 150, y: 20, w: 200, h: 36 };
   chip(boardBtnHit.x, boardBtnHit.y, boardBtnHit.w, boardBtnHit.h, tr('board_btn'), false);
   chip(accountBtnHit.x, accountBtnHit.y, accountBtnHit.w, accountBtnHit.h,
        session.name ? session.name : tr('account_btn'), !!session.name);
@@ -3032,7 +3034,8 @@ function drawGraph(x, y, w, h) {
 
 function drawSummary() {
   const st = runStats();
-  const pw = Math.min(640, W - 30), ph = 500;
+  const pw = Math.min(640, W - 30), narrowSum = pw < 480;
+  const ph = narrowSum ? 580 : 500, off = narrowSum ? 84 : 0;
   const top = Math.max(16, H / 2 - ph / 2);
   const T = THEMES[settings.theme];
   dimScreen(0.75);
@@ -3048,9 +3051,11 @@ function drawSummary() {
     [st.words, tr('sum_words')], [st.wpm, tr('sum_wpm')],
     [st.acc + '%', tr('sum_acc')], [fmtTime(st.secs), tr('sum_time')]
   ];
-  const gap = 10, bw = (pw - 60 - gap * 3) / 4, by = top + 70;
+  const gap = 10, cols = narrowSum ? 2 : 4;
+  const bw = (pw - 60 - gap * (cols - 1)) / cols;
   items.forEach(([v, label], i) => {
-    const bx = W / 2 - pw / 2 + 30 + i * (bw + gap);
+    const col = i % cols, row = Math.floor(i / cols);
+    const bx = W / 2 - pw / 2 + 30 + col * (bw + gap), by = top + 70 + row * 84;
     ctx.save();
     ctx.fillStyle = 'rgba(255,255,255,0.05)'; ctx.strokeStyle = 'rgba(255,255,255,0.1)';
     roundRect(bx, by, bw, 74, 12); ctx.fill(); ctx.stroke();
@@ -3062,19 +3067,19 @@ function drawSummary() {
     ctx.fillText(label, bx + bw / 2, by + 58);
   });
 
-  const gx = W / 2 - pw / 2 + 40, gy = top + 180, gw = pw - 80, gh = 170;
+  const gx = W / 2 - pw / 2 + 40, gy = top + 180 + off, gw = pw - 80, gh = 170;
   ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
   ctx.fillStyle = '#94a3b8'; ctx.font = '13px Prompt, "Noto Sans Thai", sans-serif';
-  ctx.fillText(tr('sum_graph'), gx, top + 160);
+  ctx.fillText(tr('sum_graph'), gx, top + 160 + off);
   drawGraph(gx + 40, gy, gw - 40, gh);
 
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillStyle = '#e6edf7'; ctx.font = '15px Prompt, "Noto Sans Thai", sans-serif';
   const isTh = settings.lang === 'th';
   const bestText = runIsBest ? (isTh ? 'สถิติใหม่!' : 'New best!') : (isTh ? `สูงสุดในเครื่อง ${localBest}` : `Best on this device ${localBest}`);
-  ctx.fillText(`+${runCoins} ◉   ·   ${bestText}`, W / 2, top + 368);
-  ctx.fillText(saveStatus || '', W / 2, top + 395);
-  drawOverlayButtons([{ label: tr('retry'), act: reset }, { label: tr('menu'), act: () => { goMenu(); } }], top + 425);
+  ctx.fillText(`+${runCoins} ◉   ·   ${bestText}`, W / 2, top + 368 + off);
+  ctx.fillText(saveStatus || '', W / 2, top + 395 + off);
+  drawOverlayButtons([{ label: tr('retry'), act: reset }, { label: tr('menu'), act: () => { goMenu(); } }], top + 425 + off);
 }
 
 // ---------- Skills state, creatures and doors ----------
@@ -3675,7 +3680,7 @@ function drawCredit() {
   ctx.fillStyle = 'rgba(203,213,225,0.45)';
   ctx.font = '500 12px Prompt, sans-serif';
   ctx.textAlign = 'right'; ctx.textBaseline = 'alphabetic';
-  ctx.fillText('Made by M', W - 14, H - 10);
+  ctx.fillText('Made by M · V2', W - 14, H - 10);
   ctx.restore();
 }
 
