@@ -2436,7 +2436,7 @@ function draw() {
     ctx.restore();
   }
   drawStageBanner();
-  if (state === 'play') { drawPauseButton(); drawAvatar(); }
+  if (state === 'play') drawAvatar();
   ctx.restore();
 
   if (damageFlash > 0) {
@@ -2483,13 +2483,13 @@ canvas.addEventListener('click', e => {
     if (b) { audio(); SFX.click(); b.act(); return; }
   }
   if (state === 'play' && avatarHit && inBox(avatarHit)) { useAbility(); return; }
-  if (state === 'play' && inBox(pauseHit)) { SFX.click(); state = 'paused'; return; }
   if (state === 'play') focusKbd();
   const inRect = r => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
 
   if (state === 'menu') {
     if (page === 'home') {
-      if (boardBtnHit && inRect(boardBtnHit)) { openBoard(); return; }
+      const pt = podiumHits.find(inRect);
+      if (pt) { SFX.click(); podiumPreset = pt.k; podiumRows = []; refreshPodium(); return; }
       if (accountBtnHit && inRect(accountBtnHit)) { if (session.name) openProfile(); else openLogin(); return; }
       if (stallHit && inRect(stallHit)) { openShop(); return; }
       const b = homeHits.find(inRect);
@@ -2716,9 +2716,8 @@ function openProfile() {
 
 function drawTopButtons() {
   const narrowTop = W < 500;
-  boardBtnHit = narrowTop ? { x: 16, y: 20, w: 100, h: 36 } : { x: 20, y: 20, w: 120, h: 36 };
-  accountBtnHit = narrowTop ? { x: 124, y: 20, w: Math.max(120, W - 194), h: 36 } : { x: 150, y: 20, w: 200, h: 36 };
-  chip(boardBtnHit.x, boardBtnHit.y, boardBtnHit.w, boardBtnHit.h, tr('board_btn'), false);
+  boardBtnHit = null;
+  accountBtnHit = narrowTop ? { x: 16, y: 20, w: Math.max(120, W - 100), h: 36 } : { x: 20, y: 20, w: 200, h: 36 };
   chip(accountBtnHit.x, accountBtnHit.y, accountBtnHit.w, accountBtnHit.h,
        session.name ? session.name : tr('account_btn'), !!session.name);
   shopBtnHit = null;
@@ -2776,6 +2775,7 @@ async function initAccounts() {
   applyDomLang();
 }
 initAccounts();
+setTimeout(refreshPodium, 0);
 
 // ---------- Combo tiers (escalating effects while the streak grows) ----------
 const TIERS = [
@@ -3468,7 +3468,7 @@ function useAbility() {
 // ---------- Pages: home, stages, settings ----------
 let page = 'home', stageCfg = null, stagePool = [], stageWon = false, homeHits = [], backHit = null;
 
-function goMenu() { state = 'menu'; page = 'home'; stageCfg = null; }
+function goMenu() { state = 'menu'; page = 'home'; stageCfg = null; refreshPodium(); }
 
 
 function loadCleared() { try { return JSON.parse(localStorage.getItem('glyphica.stages') || '[]'); } catch (e) { return []; } }
@@ -3489,9 +3489,10 @@ function drawHome() {
   ctx.save();
   ctx.fillStyle = GOLD; ctx.shadowColor = GOLD; ctx.shadowBlur = 24;
   ctx.font = `800 ${W < 760 ? 56 : 88}px Prompt, sans-serif`;
-  ctx.fillText('GLYPHICA', W / 2, H * 0.3);
+  ctx.fillText('GLYPHICA', W / 2, H * 0.17);
   ctx.restore();
   drawTopButtons();
+  drawPodium();
 
   homeHits = [];
   const items = [
@@ -3499,7 +3500,7 @@ function drawHome() {
   ];
   const w = 260, h = 54, gap = 14;
   items.forEach((it, i) => {
-    const x = W / 2 - w / 2, y = H * 0.45 + i * (h + gap);
+    const x = W / 2 - w / 2, y = H * 0.6 + i * (h + gap);
     homeHits.push({ x, y, w, h, act: it.act });
     if (it.primary) {
       ctx.save();
@@ -3680,7 +3681,7 @@ function drawCredit() {
   ctx.fillStyle = 'rgba(203,213,225,0.45)';
   ctx.font = '500 12px Prompt, sans-serif';
   ctx.textAlign = 'right'; ctx.textBaseline = 'alphabetic';
-  ctx.fillText('Made by M · V2', W - 14, H - 10);
+  ctx.fillText('Made by M', W - 14, H - 10);
   ctx.restore();
 }
 
@@ -3747,38 +3748,45 @@ const abOf = id => SHOP.find(x => x.ab.id === id).ab;
   { id: 'tiger', price: 340, color: '#f97316', accent: '#0b1020', acc: 'stripes', th: 'เสือ', en: 'Tiger', cls: 'Pro', ab: 'inferno' }
 ].forEach(c => SHOP.push({ ...c, ab: abOf(c.ab) }));
 
-// ---------- Built-in letter pad for phones ----------
-if (TOUCH) {
-  const pad = document.createElement('div');
-  pad.id = 'keypad';
-  pad.style.cssText = 'position:fixed;left:0;right:0;bottom:0;padding:8px 6px 12px;display:none;flex-direction:column;gap:6px;align-items:center;background:rgba(6,8,18,0.88);z-index:4';
-  const rows = ['qwertyuiop', 'asdfghjkl', 'zxcvbnm'];
-  rows.forEach((row, i) => {
-    const r = document.createElement('div');
-    r.style.cssText = 'display:flex;gap:5px;justify-content:center;width:100%;max-width:520px';
-    [...row].forEach(k => r.appendChild(padKey(k, k.toUpperCase())));
-    if (i === 2) r.appendChild(padKey('Backspace', '⌫', 'flex:1.6'));
-    pad.appendChild(r);
+// ---------- Podium (top 3 per difficulty, shown on the home screen) ----------
+let podiumPreset = 'normal', podiumRows = [], podiumHits = [], podiumLoading = false;
+async function refreshPodium() {
+  if (podiumLoading) return;
+  podiumLoading = true;
+  try {
+    const all = await fetchTopScores(200);
+    podiumRows = all.filter(r => r.preset === podiumPreset).slice(0, 3);
+  } catch (e) { podiumRows = []; }
+  podiumLoading = false;
+}
+function drawPodium() {
+  const top = H * 0.29;
+  podiumHits = [];
+  const keys = ['easy', 'normal', 'hard', 'insane'];
+  const cw = 78, gap = 8, tw = keys.length * cw + (keys.length - 1) * gap, x0 = W / 2 - tw / 2;
+  keys.forEach((k, i) => {
+    const x = x0 + i * (cw + gap);
+    chip(x, top, cw, 28, PRESET_NAMES[k], k === podiumPreset);
+    podiumHits.push({ x, y: top, w: cw, h: 28, k });
   });
-  document.body.appendChild(pad);
-  window.__pad = pad;
-}
-function padKey(key, label, extra = '') {
-  const b = document.createElement('button');
-  b.textContent = label;
-  b.style.cssText = 'flex:1;max-width:46px;height:44px;margin:0;padding:0;border-radius:10px;font:700 17px ui-monospace,Menlo,monospace;background:rgba(255,255,255,0.08);color:#e6edf7;border:1px solid rgba(255,255,255,0.14);touch-action:manipulation;' + extra;
-  b.addEventListener('pointerdown', e => { e.preventDefault(); window.dispatchEvent(new KeyboardEvent('keydown', { key })); });
-  return b;
-}
-function syncPad() {
-  const donate = document.getElementById('donateBtn');
-  if (donate) donate.style.display = state === 'menu' ? '' : 'none';
-  if (!window.__pad) return;
-  window.__pad.style.display = state === 'play' ? 'flex' : 'none';
-}
-
-resize();
-requestAnimationFrame(frame);
-</script>
-</body>
-</html>
+  const base = H * 0.5, bw = 84, spacing = 96, cx = W / 2;
+  const slots = [
+    { r: podiumRows[1], dx: -spacing, h: 66, col: '#cbd5e1', place: 2 },
+    { r: podiumRows[0], dx: 0,        h: 96, col: GOLD,     place: 1 },
+    { r: podiumRows[2], dx: spacing,  h: 52, col: '#d97706', place: 3 }
+  ];
+  if (!podiumRows.length) {
+    ctx.fillStyle = '#64748b'; ctx.font = '14px Prompt, sans-serif'; ctx.textAlign = 'center';
+    ctx.fillText(settings.lang === 'th' ? 'ยังไม่มีอันดับในโหมดนี้' : 'No scores in this mode yet', cx, top + 60);
+    ctx.textAlign = 'left';
+    return;
+  }
+  slots.forEach(s => {
+    const x = cx + s.dx - bw / 2, y = base - s.h;
+    ctx.save();
+    ctx.fillStyle = s.col; ctx.globalAlpha = s.r ? 0.85 : 0.2;
+    roundRect(x, y, bw, s.h, 8); ctx.fill();
+    ctx.restore();
+    if (!s.r) return;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#1a1200'; ctx.f
