@@ -2218,10 +2218,24 @@ function drawHUD(T) {
 
 function drawInputBar(T) {
   const y = H - 40 - KEYPAD_H;
+  const kfAge = performance.now() - keyFlash.t;
+  if (kfAge < 300 && keyFlash.k) {
+    ctx.save(); ctx.globalAlpha = 1 - kfAge / 300;
+    ctx.fillStyle = '#facc15'; ctx.shadowColor = '#facc15'; ctx.shadowBlur = 14;
+    // a keycap that pops up above the input bar, then floats up and fades
+    const pop = 1 + 0.35 * (1 - kfAge / 300), rise = (kfAge / 300) * 14, cap = 46;
+    ctx.translate(W / 2, y - 62 - rise); ctx.scale(pop, pop);
+    ctx.fillStyle = 'rgba(250,204,21,0.95)'; roundRect(-cap / 2, -cap / 2, cap, cap, 10); ctx.fill();
+    ctx.fillStyle = 'rgba(0,0,0,0.25)'; roundRect(-cap / 2, cap / 2 - 6, cap, 6, 3); ctx.fill();
+    ctx.fillStyle = '#1a1200'; ctx.font = '800 24px "JetBrains Mono", monospace';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(keyFlash.k.toUpperCase(), 0, -2);
+    ctx.restore();
+  }
   ctx.save();
   if (errorFlash > 0) { ctx.shadowColor = '#f87171'; ctx.shadowBlur = 20; }
   ctx.fillStyle = errorFlash > 0 ? 'rgba(248,113,113,0.25)' : 'rgba(6,10,22,0.6)';
-  ctx.strokeStyle = errorFlash > 0 ? '#f87171' : 'rgba(255,255,255,0.15)';
+  ctx.strokeStyle = errorFlash > 0 ? '#f87171' : (kfAge < 300 ? '#facc15' : 'rgba(255,255,255,0.15)');
   ctx.lineWidth = 2;
   roundRect(W / 2 - 180, y - 20, 360, 40, 10); ctx.fill(); ctx.stroke();
   ctx.restore();
@@ -3834,7 +3848,12 @@ function padKey(key, label, extra = '') {
   const b = document.createElement('button');
   b.textContent = label;
   b.style.cssText = 'flex:1;max-width:46px;height:44px;margin:0;padding:0;border-radius:10px;font:700 17px ui-monospace,Menlo,monospace;background:rgba(255,255,255,0.08);color:#e6edf7;border:1px solid rgba(255,255,255,0.14);touch-action:manipulation;' + extra;
-  b.addEventListener('pointerdown', e => { e.preventDefault(); window.dispatchEvent(new KeyboardEvent('keydown', { key })); });
+  const lit = () => { b.style.background = 'rgba(250,204,21,0.5)'; b.style.boxShadow = '0 0 18px rgba(250,204,21,0.95)'; b.style.borderColor = '#facc15'; b.style.color = '#1a1200'; };
+  const unlit = () => { b.style.background = 'rgba(255,255,255,0.08)'; b.style.boxShadow = 'none'; b.style.borderColor = 'rgba(255,255,255,0.14)'; b.style.color = '#e6edf7'; };
+  b.addEventListener('pointerdown', e => { e.preventDefault(); lit(); window.dispatchEvent(new KeyboardEvent('keydown', { key })); setTimeout(unlit, 180); });
+  b.addEventListener('pointerup', unlit);
+  b.addEventListener('pointerleave', unlit);
+  b.addEventListener('pointercancel', unlit);
   return b;
 }
 function syncPad() {
@@ -3848,6 +3867,12 @@ function syncPad() {
 let settingsScroll = 0, settingsMax = 0, dragScroll = null;
 function scrollSettings(to) { settingsScroll = Math.max(0, Math.min(to, settingsMax)); }
 addEventListener('wheel', e => { if (state === 'menu' && page === 'settings') scrollSettings(settingsScroll + e.deltaY); }, { passive: true });
+
+// ---------- Key flash: which letter was pressed ----------
+let keyFlash = { k: '', t: -9999 };
+addEventListener('keydown', e => {
+  if (e.key.length === 1 && /^[a-z]$/i.test(e.key)) keyFlash = { k: e.key.toLowerCase(), t: performance.now() };
+});
 
 resize();
 requestAnimationFrame(frame);
