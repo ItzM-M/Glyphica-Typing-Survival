@@ -118,3 +118,5 @@ Glyphica: Typing Survival is an evolving project. Features and gameplay systems 
 ---
 
 *Built with JavaScript, persistence, and a little bit of survival instinct.*
+
+https://itzm-m.github.io/Glyphica-Typing-Survival/
